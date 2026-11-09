@@ -1,6 +1,5 @@
 package com.ingenico.ecrsimulator
 
-import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -12,17 +11,22 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.Image
@@ -38,6 +42,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.MaterialTheme
@@ -45,6 +51,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -65,6 +72,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -72,66 +80,71 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
 import com.ingenico.ecrsimulator.ui.theme.ECRSimulatorTheme
 import com.ingenico.ecrsimulator.ui.theme.Palette
+import com.ingenico.ecrsimulator.iap.IapConnectorClient
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.math.BigDecimal
-import java.math.RoundingMode
 import java.text.NumberFormat
 import java.util.Locale
+import com.ingenico.ecrsimulator.shared.CartLine
+import com.ingenico.ecrsimulator.shared.CartLineKey
+import com.ingenico.ecrsimulator.shared.Product
+import com.ingenico.ecrsimulator.shared.ProductCategory
+import com.ingenico.ecrsimulator.shared.ProductSelection
+import com.ingenico.ecrsimulator.shared.addToCart
+import com.ingenico.ecrsimulator.shared.calculateItemTotalCents
+import com.ingenico.ecrsimulator.shared.calculateOrderTotals
+import com.ingenico.ecrsimulator.shared.products
+import com.ingenico.ecrsimulator.shared.updateCartQuantities
+import com.ingenico.ecrsimulator.shared.availableIapWorkflows
+import com.ingenico.ecrsimulator.shared.IapWorkflow
+import com.ingenico.ecrsimulator.iap.IapExecutor
+import kotlinx.coroutines.launch
 
-private enum class ProductCategory(val label: String, val tint: Color) {
-    HOT_DRINKS("Hot drinks", Color(0xFFE9C8A5)),
-    COLD_DRINKS("Cold drinks", Color(0xFFC5E6EE)),
-    SALADS("Salads", Color(0xFFCFE3BE)),
-    SNACKS("Snacks", Color(0xFFF1D6A8)),
-    SANDWICHES("Sandwiches", Color(0xFFEBC9A2)),
-    DESSERTS("Desserts", Color(0xFFF0C8D3))
+private fun ProductCategory.tint(): Color = when (this) {
+    ProductCategory.HOT_DRINKS -> Color(0xFFE9C8A5)
+    ProductCategory.COLD_DRINKS -> Color(0xFFC5E6EE)
+    ProductCategory.SALADS -> Color(0xFFCFE3BE)
+    ProductCategory.SNACKS -> Color(0xFFF1D6A8)
+    ProductCategory.SANDWICHES -> Color(0xFFEBC9A2)
+    ProductCategory.DESSERTS -> Color(0xFFF0C8D3)
 }
 
-private data class Product(
-    val id: String,
-    val name: String,
-    val category: ProductCategory,
-    val price: BigDecimal,
-    val description: String,
-    @param:androidx.annotation.DrawableRes val imageRes: Int
-)
-
-private data class ProductSelection(val quantity: Int = 0, val customization: String = "")
-private data class CartLine(val product: Product, val quantity: Int, val customization: String) {
-    val subtotal: BigDecimal get() = product.price * quantity.toBigDecimal()
-    val key: CartLineKey get() = CartLineKey(product.id, customization)
+private fun Product.imageRes(): Int = when (imageKey) {
+    "product_americano" -> R.drawable.product_americano
+    "product_chai_latte" -> R.drawable.product_chai_latte
+    "product_cappuccino" -> R.drawable.product_cappuccino
+    "product_mocha" -> R.drawable.product_mocha
+    "product_berry_smoothie" -> R.drawable.product_berry_smoothie
+    "product_cold_brew" -> R.drawable.product_cold_brew
+    "product_iced_matcha" -> R.drawable.product_iced_matcha
+    "product_lemonade" -> R.drawable.product_lemonade
+    "product_caesar_salad" -> R.drawable.product_caesar_salad
+    "product_garden_salad" -> R.drawable.product_garden_salad
+    "product_greek_salad" -> R.drawable.product_greek_salad
+    "product_quinoa_bowl" -> R.drawable.product_quinoa_bowl
+    "product_banana_bread" -> R.drawable.product_banana_bread
+    "product_granola_bar" -> R.drawable.product_granola_bar
+    "product_pretzel" -> R.drawable.product_pretzel
+    "product_yogurt_cup" -> R.drawable.product_yogurt_cup
+    "product_caprese_panini" -> R.drawable.product_caprese_panini
+    "product_chicken_club" -> R.drawable.product_chicken_club
+    "product_egg_salad" -> R.drawable.product_egg_salad
+    "product_turkey_avocado" -> R.drawable.product_turkey_avocado
+    "product_brownie" -> R.drawable.product_brownie
+    "product_carrot_cake" -> R.drawable.product_carrot_cake
+    "product_cheesecake" -> R.drawable.product_cheesecake
+    "product_lemon_tart" -> R.drawable.product_lemon_tart
+    else -> error("Unknown product image key: $imageKey")
 }
-private data class CartLineKey(val productId: String, val customization: String)
-private data class OrderTotals(val items: BigDecimal, val tax: BigDecimal, val total: BigDecimal)
-
-private val products = listOf(
-    Product("americano", "Americano", ProductCategory.HOT_DRINKS, BigDecimal("3.25"), "Espresso diluted with hot water for a smooth, rich cup.", R.drawable.product_americano),
-    Product("chai-latte", "Chai Latte", ProductCategory.HOT_DRINKS, BigDecimal("4.50"), "Black tea blended with warming spices and steamed milk.", R.drawable.product_chai_latte),
-    Product("cappuccino", "Cappuccino", ProductCategory.HOT_DRINKS, BigDecimal("4.25"), "Double espresso topped with steamed milk and airy foam.", R.drawable.product_cappuccino),
-    Product("mocha", "Mocha", ProductCategory.HOT_DRINKS, BigDecimal("4.75"), "Espresso, chocolate, and steamed milk finished with foam.", R.drawable.product_mocha),
-    Product("berry-smoothie", "Berry Smoothie", ProductCategory.COLD_DRINKS, BigDecimal("5.25"), "A chilled blend of strawberries, blueberries, banana, and yogurt.", R.drawable.product_berry_smoothie),
-    Product("cold-brew", "Cold Brew", ProductCategory.COLD_DRINKS, BigDecimal("4.00"), "Slow-steeped coffee served over ice.", R.drawable.product_cold_brew),
-    Product("iced-matcha", "Iced Matcha Latte", ProductCategory.COLD_DRINKS, BigDecimal("5.00"), "Ceremonial green tea whisked with milk and served over ice.", R.drawable.product_iced_matcha),
-    Product("lemonade", "Lemonade", ProductCategory.COLD_DRINKS, BigDecimal("3.50"), "Fresh lemon juice with a touch of sweetness, served chilled.", R.drawable.product_lemonade),
-    Product("caesar-salad", "Caesar Salad", ProductCategory.SALADS, BigDecimal("8.50"), "Romaine, parmesan, croutons, and classic Caesar dressing.", R.drawable.product_caesar_salad),
-    Product("garden-salad", "Garden Salad", ProductCategory.SALADS, BigDecimal("7.75"), "Mixed greens with cucumber, tomato, carrot, and house dressing.", R.drawable.product_garden_salad),
-    Product("greek-salad", "Greek Salad", ProductCategory.SALADS, BigDecimal("8.25"), "Cucumber, tomato, olives, red onion, and feta.", R.drawable.product_greek_salad),
-    Product("quinoa-bowl", "Quinoa Bowl", ProductCategory.SALADS, BigDecimal("9.25"), "Quinoa, roasted vegetables, greens, and lemon tahini.", R.drawable.product_quinoa_bowl),
-    Product("banana-bread", "Banana Bread", ProductCategory.SNACKS, BigDecimal("3.25"), "Moist banana loaf baked with ripe bananas and a hint of cinnamon.", R.drawable.product_banana_bread),
-    Product("granola-bar", "Granola Bar", ProductCategory.SNACKS, BigDecimal("2.50"), "Oats, honey, and toasted seeds in a chewy snack bar.", R.drawable.product_granola_bar),
-    Product("pretzel", "Soft Pretzel", ProductCategory.SNACKS, BigDecimal("3.00"), "Warm, oven-baked pretzel with a lightly salted crust.", R.drawable.product_pretzel),
-    Product("yogurt-cup", "Yogurt & Fruit Cup", ProductCategory.SNACKS, BigDecimal("4.25"), "Creamy yogurt layered with seasonal fruit and crunchy granola.", R.drawable.product_yogurt_cup),
-    Product("caprese-panini", "Caprese Panini", ProductCategory.SANDWICHES, BigDecimal("9.50"), "Mozzarella, tomato, and basil pressed on toasted sourdough.", R.drawable.product_caprese_panini),
-    Product("chicken-club", "Chicken Club", ProductCategory.SANDWICHES, BigDecimal("10.50"), "Grilled chicken, bacon, lettuce, and tomato on multigrain bread.", R.drawable.product_chicken_club),
-    Product("egg-salad", "Egg Salad Sandwich", ProductCategory.SANDWICHES, BigDecimal("8.75"), "House-made egg salad with crisp greens on soft wheat bread.", R.drawable.product_egg_salad),
-    Product("turkey-avocado", "Turkey & Avocado", ProductCategory.SANDWICHES, BigDecimal("10.25"), "Roasted turkey, avocado, and greens with herb mayo.", R.drawable.product_turkey_avocado),
-    Product("brownie", "Chocolate Brownie", ProductCategory.DESSERTS, BigDecimal("3.75"), "Fudgy chocolate brownie with a rich cocoa finish.", R.drawable.product_brownie),
-    Product("carrot-cake", "Carrot Cake", ProductCategory.DESSERTS, BigDecimal("5.00"), "Spiced carrot cake layered with cream cheese frosting.", R.drawable.product_carrot_cake),
-    Product("cheesecake", "New York Cheesecake", ProductCategory.DESSERTS, BigDecimal("5.25"), "Classic baked cheesecake on a buttery biscuit base.", R.drawable.product_cheesecake),
-    Product("lemon-tart", "Lemon Tart", ProductCategory.DESSERTS, BigDecimal("4.75"), "Bright lemon curd in a crisp, buttery pastry shell.", R.drawable.product_lemon_tart)
-)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -139,16 +152,14 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             ECRSimulatorTheme(dynamicColor = false) {
-                CashierScreen(onOpenWorkflows = {
-                    startActivity(Intent(this, WorkflowActivity::class.java))
-                })
+                CashierScreen()
             }
         }
     }
 }
 
 @Composable
-private fun CashierScreen(onOpenWorkflows: () -> Unit) {
+private fun CashierScreen() {
     var selectedCategory by remember { mutableStateOf<ProductCategory?>(null) }
     val selections = remember { mutableStateMapOf<String, ProductSelection>() }
     val cart = remember { mutableStateListOf<CartLine>() }
@@ -157,9 +168,89 @@ private fun CashierScreen(onOpenWorkflows: () -> Unit) {
     var showOrder by remember { mutableStateOf(false) }
     var showCheckout by remember { mutableStateOf(false) }
     var checkoutComplete by remember { mutableStateOf(false) }
-    var completedAmount by remember { mutableStateOf(BigDecimal.ZERO) }
+    var checkoutInProgress by remember { mutableStateOf(false) }
+    var checkoutError by remember { mutableStateOf<String?>(null) }
+    var checkoutMessage by remember { mutableStateOf("") }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val initialSettings = remember { IapSettingsStore.load(context) }
+    var connectorUrl by remember { mutableStateOf(initialSettings.connectorUrl) }
+    var configUrlDraft by remember { mutableStateOf(initialSettings.connectorUrl) }
+    var selectedExecutorId by remember { mutableStateOf(initialSettings.executorId) }
+    var selectedWorkflow by remember {
+        mutableStateOf(
+            availableIapWorkflows.firstOrNull { it.id == initialSettings.workflowId }
+                ?: availableIapWorkflows.first { it.id == "asiTransactionExample" }
+        )
+    }
+    var executors by remember { mutableStateOf(emptyList<IapExecutor>()) }
+    var showConfiguration by remember { mutableStateOf(false) }
+    var checkoutAmountCents by remember { mutableStateOf(0L) }
+    var isRefreshingTerminals by remember { mutableStateOf(false) }
+    var isPreparingCheckout by remember { mutableStateOf(false) }
+    var terminalRefreshError by remember { mutableStateOf<String?>(null) }
+    var isActivityResumed by remember { mutableStateOf(false) }
+    val terminalRefreshMutex = remember { Mutex() }
     val editedCartQuantities = remember { mutableStateMapOf<CartLineKey, Int>() }
     val productListState = rememberLazyListState()
+
+    DisposableEffect(context) {
+        val activity = context as? ComponentActivity
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> isActivityResumed = true
+                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> isActivityResumed = false
+                else -> Unit
+            }
+        }
+        activity?.lifecycle?.addObserver(observer)
+        isActivityResumed = activity?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED) == true
+        onDispose { activity?.lifecycle?.removeObserver(observer) }
+    }
+
+    suspend fun refreshTerminals(): Boolean = terminalRefreshMutex.withLock {
+        isRefreshingTerminals = true
+        terminalRefreshError = null
+        try {
+            IapConnector.client.connect(connectorUrl)
+            executors = IapConnector.client.listExecutors()
+            if (executors.none { it.executorId == selectedExecutorId && it.isAvailable() }) {
+                selectedExecutorId = ""
+            }
+            val selectedSerial = executors.firstOrNull { it.executorId == selectedExecutorId }
+                ?.serialNumber.orEmpty()
+            IapSettingsStore.save(
+                context,
+                IapSettings(connectorUrl, selectedExecutorId, selectedWorkflow.id, selectedSerial)
+            )
+            true
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: Exception) {
+            executors = emptyList()
+            selectedExecutorId = ""
+            IapSettingsStore.save(
+                context,
+                IapSettings(connectorUrl, "", selectedWorkflow.id)
+            )
+            terminalRefreshError = exception.message ?: "Could not refresh POSConnect terminals."
+            false
+        } finally {
+            isRefreshingTerminals = false
+        }
+    }
+
+    fun openCheckout(amountCents: Long) {
+        if (isPreparingCheckout || checkoutInProgress) return
+        checkoutAmountCents = amountCents
+        checkoutError = null
+        isPreparingCheckout = true
+        scope.launch {
+            refreshTerminals()
+            isPreparingCheckout = false
+            showCheckout = true
+        }
+    }
 
     LaunchedEffect(selectedCategory) {
         if (selectedCategory == null) {
@@ -172,20 +263,74 @@ private fun CashierScreen(onOpenWorkflows: () -> Unit) {
         .sortedWith(compareBy<Product> { it.category.ordinal }.thenBy { it.name.lowercase(Locale.ROOT) })
     val selectedCount = selections.values.sumOf { it.quantity }
     val cartCount = cart.sumOf { it.quantity }
-    val itemTotal = cart.fold(BigDecimal.ZERO) { sum, line -> sum + line.subtotal }
-    val totals = calculateOrderTotals(itemTotal)
+    val availableTerminals = executors.filter(IapExecutor::isAvailable)
+    val itemTotalCents = calculateItemTotalCents(cart)
+    val totals = calculateOrderTotals(itemTotalCents)
     val editedItemCount = cart.sumOf { editedCartQuantities[it.key] ?: it.quantity }
     val cartHasQuantityChanges = cart.any { line ->
         (editedCartQuantities[line.key] ?: line.quantity) != line.quantity
     }
 
     fun applyCartEdits() {
-        val updatedCart = cart.mapNotNull { line ->
-            val quantity = editedCartQuantities[line.key] ?: line.quantity
-            if (quantity == 0) null else line.copy(quantity = quantity)
-        }
+        val updatedCart = updateCartQuantities(cart, editedCartQuantities)
         cart.clear()
         cart.addAll(updatedCart)
+    }
+
+    fun startCheckout() {
+        if (selectedExecutorId.isBlank()) {
+            checkoutError = "Select an available terminal before starting checkout."
+            return
+        }
+        checkoutError = null
+        checkoutInProgress = true
+        scope.launch {
+            try {
+                IapConnector.client.connect(connectorUrl)
+                val amount = "${checkoutAmountCents / 100}.${(checkoutAmountCents % 100).toString().padStart(2, '0')}"
+                val execution = IapConnector.client.startWorkflow(
+                    executorId = selectedExecutorId,
+                    workflowId = selectedWorkflow.id,
+                    amount = amount
+                )
+                val selected = executors.firstOrNull { it.executorId == execution.executorId }
+                checkoutMessage = "${selectedWorkflow.description} started on terminal ${selected?.serialNumber?.takeIf(String::isNotBlank) ?: "selected terminal"} for ${formatPrice(checkoutAmountCents)}. Check the terminal for the transaction result."
+                IapSettingsStore.save(
+                    context,
+                    IapSettings(connectorUrl, selectedExecutorId, selectedWorkflow.id, selected?.serialNumber.orEmpty())
+                )
+                cart.clear()
+                showCheckout = false
+                checkoutComplete = true
+            } catch (exception: CancellationException) {
+                throw exception
+            } catch (exception: Exception) {
+                checkoutError = exception.message ?: "Could not start checkout on the POSConnect terminal."
+            } finally {
+                checkoutInProgress = false
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) { refreshTerminals() }
+
+    LaunchedEffect(
+        isActivityResumed,
+        showCheckout,
+        checkoutComplete,
+        showConfiguration,
+        showOrder,
+        isPreparingCheckout,
+        checkoutInProgress
+    ) {
+        if (isActivityResumed && !showCheckout && !checkoutComplete && !showConfiguration &&
+            !showOrder && !isPreparingCheckout && !checkoutInProgress
+        ) {
+            while (true) {
+                delay(5 * 60 * 1000L)
+                refreshTerminals()
+            }
+        }
     }
 
     Surface(
@@ -206,8 +351,28 @@ private fun CashierScreen(onOpenWorkflows: () -> Unit) {
                     Text("Coffee House", color = Palette.white, fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
                     Text("Choose items for this order", color = Palette.muted, fontSize = 13.sp)
                 }
-                TextButton(onClick = onOpenWorkflows) {
-                    Text("Workflow demos", color = Palette.cyan, fontWeight = FontWeight.SemiBold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Terminals: ${availableTerminals.size}",
+                        color = Palette.cyan,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Surface(
+                        onClick = {
+                            configUrlDraft = connectorUrl
+                            showConfiguration = true
+                        },
+                        modifier = Modifier.size(44.dp).semantics {
+                            contentDescription = "Configure POSConnect URL"
+                        },
+                        color = Color.Transparent,
+                        shape = CircleShape
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text("⚙", color = Palette.cyan, fontSize = 23.sp)
+                        }
+                    }
                 }
             }
 
@@ -228,7 +393,7 @@ private fun CashierScreen(onOpenWorkflows: () -> Unit) {
                             selections[product.id] = selection.copy(quantity = quantity.coerceAtLeast(0))
                         },
                         onEditCustomization = { editingCustomizationProduct = product },
-                        onInfo = { infoProduct = product }
+                        onImageClick = { infoProduct = product }
                     )
                 }
             }
@@ -238,16 +403,14 @@ private fun CashierScreen(onOpenWorkflows: () -> Unit) {
                     selections.forEach { (id, selection) ->
                         if (selection.quantity > 0) {
                             val product = products.first { it.id == id }
-                            val existingIndex = cart.indexOfFirst {
-                                it.product.id == id && it.customization == selection.customization.trim()
-                            }
-                            if (existingIndex >= 0) {
-                                cart[existingIndex] = cart[existingIndex].copy(
-                                    quantity = cart[existingIndex].quantity + selection.quantity
-                                )
-                            } else {
-                                cart.add(CartLine(product, selection.quantity, selection.customization.trim()))
-                            }
+                            val updatedCart = addToCart(
+                                cart,
+                                product,
+                                selection.quantity,
+                                selection.customization
+                            )
+                            cart.clear()
+                            cart.addAll(updatedCart)
                             selections[id] = ProductSelection()
                         }
                     }
@@ -267,16 +430,14 @@ private fun CashierScreen(onOpenWorkflows: () -> Unit) {
 
                 OrderSummary(
                     itemCount = cartCount,
-                    itemTotal = itemTotal,
+                    itemTotalCents = itemTotalCents,
                     onExpand = {
                         editedCartQuantities.clear()
                         cart.forEach { line -> editedCartQuantities[line.key] = line.quantity }
                         showOrder = true
                     },
                     onCheckout = {
-                        editedCartQuantities.clear()
-                        cart.forEach { line -> editedCartQuantities[line.key] = line.quantity }
-                        showOrder = true
+                        openCheckout(totals.totalCents)
                     }
                 )
             }
@@ -296,10 +457,9 @@ private fun CashierScreen(onOpenWorkflows: () -> Unit) {
     }
 
     if (showOrder) {
-        val editedItemTotal = cart.fold(BigDecimal.ZERO) { sum, line ->
-            sum + line.product.price * (editedCartQuantities[line.key] ?: line.quantity).toBigDecimal()
-        }
-        val editedTotals = calculateOrderTotals(editedItemTotal)
+        val editedCart = updateCartQuantities(cart, editedCartQuantities)
+        val editedItemTotalCents = calculateItemTotalCents(editedCart)
+        val editedTotals = calculateOrderTotals(editedItemTotalCents)
         Dialog(
             onDismissRequest = { showOrder = false },
             properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -382,12 +542,12 @@ private fun CashierScreen(onOpenWorkflows: () -> Unit) {
                                 ) {
                                     Text("TOTAL", color = Palette.softWhite, fontWeight = FontWeight.Bold)
                                     Text(
-                                        "(${formatPrice(editedTotals.items)} + ${formatPrice(editedTotals.tax)} in taxes)",
+                                        "(${formatPrice(editedTotals.itemsCents)} + ${formatPrice(editedTotals.taxCents)} in taxes)",
                                         color = Palette.muted,
                                         fontSize = 12.sp
                                     )
                                 }
-                                Text(formatPrice(editedTotals.total), color = Palette.mint, fontSize = 21.sp, fontWeight = FontWeight.Bold)
+                                Text(formatPrice(editedTotals.totalCents), color = Palette.mint, fontSize = 21.sp, fontWeight = FontWeight.Bold)
                             }
                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                 Button(
@@ -410,9 +570,9 @@ private fun CashierScreen(onOpenWorkflows: () -> Unit) {
                                     onClick = {
                                         applyCartEdits()
                                         showOrder = false
-                                        showCheckout = true
+                                        openCheckout(editedTotals.totalCents)
                                     },
-                                    enabled = editedItemCount > 0,
+                                    enabled = editedItemCount > 0 && !isPreparingCheckout,
                                     shape = RoundedCornerShape(12.dp),
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = Palette.mint,
@@ -441,7 +601,7 @@ private fun CashierScreen(onOpenWorkflows: () -> Unit) {
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(product.description, lineHeight = 21.sp)
-                    Text("${product.category.label}  •  ${formatPrice(product.price)} each", color = Palette.muted)
+                    Text("${product.category.label}  •  ${formatPrice(product.priceCents)} each", color = Palette.muted)
                 }
             },
             confirmButton = {
@@ -450,42 +610,343 @@ private fun CashierScreen(onOpenWorkflows: () -> Unit) {
         )
     }
 
-    if (showCheckout || checkoutComplete) {
+    if (showConfiguration) {
         AlertDialog(
-            onDismissRequest = {
-                showCheckout = false
-                checkoutComplete = false
-            },
+            onDismissRequest = { showConfiguration = false },
             containerColor = Palette.deepSurface,
             titleContentColor = Palette.white,
             textContentColor = Palette.softWhite,
-            title = { Text(if (checkoutComplete) "Order complete" else "Confirm checkout") },
+            title = { Text("POSConnect configuration") },
             text = {
-                Text(
-                    if (checkoutComplete) "Demo payment approved for ${formatPrice(completedAmount)}."
-                    else "$cartCount ${if (cartCount == 1) "item" else "items"} · ${formatPrice(totals.total)}"
+                OutlinedTextField(
+                    value = configUrlDraft,
+                    onValueChange = { configUrlDraft = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("WebSocket URL") },
+                    placeholder = { Text("wss://api.dev.icp.ingenico.com/pos-connect") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Palette.cyan,
+                        unfocusedBorderColor = Palette.surfaceRaised,
+                        cursorColor = Palette.mint,
+                        focusedTextColor = Palette.white,
+                        unfocusedTextColor = Palette.white,
+                        focusedContainerColor = Palette.deepSurface,
+                        unfocusedContainerColor = Palette.deepSurface
+                    )
                 )
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        if (checkoutComplete) {
-                            checkoutComplete = false
+                        val newUrl = configUrlDraft.trim()
+                        if (newUrl.isNotBlank()) {
+                            connectorUrl = newUrl
+                            selectedExecutorId = ""
+                            executors = emptyList()
+                            IapSettingsStore.save(
+                                context,
+                                IapSettings(newUrl, "", selectedWorkflow.id)
+                            )
+                            showConfiguration = false
+                            scope.launch { refreshTerminals() }
+                        }
+                    },
+                    enabled = configUrlDraft.isNotBlank()
+                ) { Text("Save", color = Palette.mint) }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { configUrlDraft = IapConnectorClient.DEFAULT_CONNECTOR_URL }) {
+                        Text("Reset to default", color = Palette.cyan)
+                    }
+                    TextButton(onClick = { showConfiguration = false }) {
+                        Text("Cancel", color = Palette.cyan)
+                    }
+                }
+            }
+        )
+    }
+
+    if (showCheckout) {
+        Dialog(
+            onDismissRequest = { if (!checkoutInProgress) showCheckout = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            BoxWithConstraints(
+                modifier = Modifier.fillMaxSize().padding(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                val wideLayout = maxWidth >= 760.dp
+                Surface(
+                    modifier = Modifier
+                        .width(if (maxWidth >= 940.dp) 900.dp else maxWidth * 0.96f)
+                        .heightIn(max = maxHeight * 0.96f),
+                    color = Palette.deepSurface,
+                    contentColor = Palette.white,
+                    shape = RoundedCornerShape(20.dp),
+                    border = BorderStroke(1.dp, Palette.cyan.copy(alpha = 0.35f))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp).verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(18.dp)
+                    ) {
+                        Text(
+                            "Checkout · ${formatPrice(checkoutAmountCents)}",
+                            color = Palette.white,
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        if (wideLayout) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().height(440.dp),
+                                horizontalArrangement = Arrangement.spacedBy(24.dp)
+                            ) {
+                                CheckoutSelectors(
+                                    modifier = Modifier.width(330.dp).fillMaxHeight(),
+                                    availableTerminals = availableTerminals,
+                                    selectedExecutorId = selectedExecutorId,
+                                    selectedWorkflow = selectedWorkflow,
+                                    isRefreshingTerminals = isRefreshingTerminals,
+                                    terminalRefreshError = terminalRefreshError,
+                                    checkoutError = checkoutError,
+                                    onTerminalSelected = { executor ->
+                                        selectedExecutorId = executor.executorId
+                                        IapSettingsStore.save(
+                                            context,
+                                            IapSettings(
+                                                connectorUrl,
+                                                selectedExecutorId,
+                                                selectedWorkflow.id,
+                                                executor.serialNumber.orEmpty()
+                                            )
+                                        )
+                                    },
+                                    onWorkflowSelected = { workflow ->
+                                        selectedWorkflow = workflow
+                                        IapSettingsStore.save(
+                                            context,
+                                            IapSettings(
+                                                connectorUrl,
+                                                selectedExecutorId,
+                                                workflow.id,
+                                                availableTerminals.firstOrNull {
+                                                    it.executorId == selectedExecutorId
+                                                }?.serialNumber.orEmpty()
+                                            )
+                                        )
+                                    }
+                                )
+                                WorkflowPreview(
+                                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                                    workflow = selectedWorkflow
+                                )
+                            }
                         } else {
-                            completedAmount = totals.total
-                            cart.clear()
-                            showCheckout = false
-                            checkoutComplete = true
+                            CheckoutSelectors(
+                                modifier = Modifier.fillMaxWidth(),
+                                availableTerminals = availableTerminals,
+                                selectedExecutorId = selectedExecutorId,
+                                selectedWorkflow = selectedWorkflow,
+                                isRefreshingTerminals = isRefreshingTerminals,
+                                terminalRefreshError = terminalRefreshError,
+                                checkoutError = checkoutError,
+                                onTerminalSelected = { executor ->
+                                    selectedExecutorId = executor.executorId
+                                    IapSettingsStore.save(
+                                        context,
+                                        IapSettings(
+                                            connectorUrl,
+                                            selectedExecutorId,
+                                            selectedWorkflow.id,
+                                            executor.serialNumber.orEmpty()
+                                        )
+                                    )
+                                },
+                                onWorkflowSelected = { workflow ->
+                                    selectedWorkflow = workflow
+                                    IapSettingsStore.save(
+                                        context,
+                                        IapSettings(
+                                            connectorUrl,
+                                            selectedExecutorId,
+                                            workflow.id,
+                                            availableTerminals.firstOrNull {
+                                                it.executorId == selectedExecutorId
+                                            }?.serialNumber.orEmpty()
+                                        )
+                                    )
+                                }
+                            )
+                            WorkflowPreview(
+                                modifier = Modifier.fillMaxWidth().height(280.dp),
+                                workflow = selectedWorkflow
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextButton(
+                                onClick = { showCheckout = false },
+                                enabled = !checkoutInProgress
+                            ) { Text("Cancel", color = Palette.cyan) }
+                            TextButton(
+                                onClick = { startCheckout() },
+                                enabled = selectedExecutorId.isNotBlank() && !checkoutInProgress &&
+                                    !isRefreshingTerminals
+                            ) {
+                                Text(
+                                    if (checkoutInProgress) "Starting…" else "Start checkout",
+                                    color = Palette.mint
+                                )
+                            }
                         }
                     }
-                ) { Text(if (checkoutComplete) "Done" else "Pay", color = Palette.mint) }
-            },
-            dismissButton = if (!checkoutComplete) {
-                { TextButton(onClick = { showCheckout = false }) { Text("Cancel", color = Palette.cyan) } }
-            } else null
+                }
+            }
+        }
+    }
+
+    if (checkoutComplete) {
+        AlertDialog(
+            onDismissRequest = { checkoutComplete = false },
+            containerColor = Palette.deepSurface,
+            titleContentColor = Palette.white,
+            textContentColor = Palette.softWhite,
+            title = { Text("Transaction sent") },
+            text = { Text(checkoutMessage) },
+            confirmButton = {
+                TextButton(onClick = { checkoutComplete = false }) {
+                    Text("Done", color = Palette.mint)
+                }
+            }
         )
     }
 }
+
+private fun terminalSerialLabel(executor: IapExecutor): String =
+    executor.serialNumber?.takeIf(String::isNotBlank)?.let { "$it · ${executor.status}" }
+        ?: "Serial number unavailable · ${executor.status}"
+
+@Composable
+private fun CheckoutSelectors(
+    modifier: Modifier,
+    availableTerminals: List<IapExecutor>,
+    selectedExecutorId: String,
+    selectedWorkflow: IapWorkflow,
+    isRefreshingTerminals: Boolean,
+    terminalRefreshError: String?,
+    checkoutError: String?,
+    onTerminalSelected: (IapExecutor) -> Unit,
+    onWorkflowSelected: (IapWorkflow) -> Unit
+) {
+    var executorMenuExpanded by remember { mutableStateOf(false) }
+    var workflowMenuExpanded by remember { mutableStateOf(false) }
+
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        CheckoutStepTitle(1, "Select terminal", Palette.cyan)
+        Box {
+            TextButton(
+                onClick = { executorMenuExpanded = true },
+                enabled = availableTerminals.isNotEmpty() && !isRefreshingTerminals
+            ) {
+                Text(
+                    availableTerminals.firstOrNull { it.executorId == selectedExecutorId }
+                        ?.let(::terminalSerialLabel) ?: "Select an available terminal",
+                    color = Palette.cyan,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            DropdownMenu(
+                expanded = executorMenuExpanded,
+                onDismissRequest = { executorMenuExpanded = false }
+            ) {
+                availableTerminals.forEach { executor ->
+                    DropdownMenuItem(
+                        text = { Text(terminalSerialLabel(executor)) },
+                        onClick = {
+                            onTerminalSelected(executor)
+                            executorMenuExpanded = false
+                        }
+                    )
+                }
+            }
+        }
+        CheckoutStepTitle(2, "Select workflow", Palette.mint)
+        Box {
+            TextButton(onClick = { workflowMenuExpanded = true }) {
+                Text(
+                    "${selectedWorkflow.description} (${selectedWorkflow.id})",
+                    color = Palette.mint,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            DropdownMenu(
+                expanded = workflowMenuExpanded,
+                onDismissRequest = { workflowMenuExpanded = false }
+            ) {
+                availableIapWorkflows.forEach { workflow ->
+                    DropdownMenuItem(
+                        text = { Text("${workflow.description} (${workflow.id})") },
+                        onClick = {
+                            onWorkflowSelected(workflow)
+                            workflowMenuExpanded = false
+                        }
+                    )
+                }
+            }
+        }
+        terminalRefreshError?.let { Text(it, color = Color(0xFFFF8A80)) }
+        checkoutError?.let { Text(it, color = Color(0xFFFF8A80)) }
+    }
+}
+
+@Composable
+private fun CheckoutStepTitle(number: Int, title: String, accent: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Surface(modifier = Modifier.size(28.dp), color = accent, shape = CircleShape) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(number.toString(), color = Palette.deepSurface, fontWeight = FontWeight.Bold)
+            }
+        }
+        Text(title, color = Palette.white, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun WorkflowPreview(modifier: Modifier, workflow: IapWorkflow) {
+    Surface(
+        modifier = modifier,
+        color = Palette.surfaceRaised,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, Palette.cyan.copy(alpha = 0.25f))
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text("Workflow image", color = Palette.muted, fontSize = 14.sp)
+            Spacer(Modifier.height(20.dp))
+            Text(
+                workflow.description,
+                color = Palette.white,
+                fontSize = 30.sp,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(workflow.id, color = Palette.cyan, fontSize = 14.sp, textAlign = TextAlign.Center)
+        }
+    }
+}
+
+private fun IapExecutor.isAvailable(): Boolean = status.equals("AVAILABLE", ignoreCase = true)
 
 @Composable
 private fun CustomizationEditor(
@@ -630,7 +1091,7 @@ private fun ProductCard(
     selection: ProductSelection,
     onQuantityChange: (Int) -> Unit,
     onEditCustomization: () -> Unit,
-    onInfo: () -> Unit
+    onImageClick: () -> Unit
 ) {
     Card(
         modifier = Modifier.width(252.dp).fillMaxSize(),
@@ -647,13 +1108,13 @@ private fun ProductCard(
         ) {
             Box(
                 modifier = Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(12.dp))
-                    .background(product.category.tint),
+                    .background(product.category.tint()),
                 contentAlignment = Alignment.Center
             ) {
                 Image(
-                    painter = painterResource(product.imageRes),
-                    contentDescription = "${product.name} photo",
-                    modifier = Modifier.fillMaxSize(),
+                    painter = painterResource(product.imageRes()),
+                    contentDescription = "Show details about ${product.name}",
+                    modifier = Modifier.fillMaxSize().clickable(onClick = onImageClick),
                     contentScale = ContentScale.Crop
                 )
             }
@@ -667,19 +1128,7 @@ private fun ProductCard(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Text("${formatPrice(product.price)} / each", color = Palette.surfaceRaised, fontSize = 13.sp)
-                }
-                Surface(
-                    onClick = onInfo,
-                    modifier = Modifier.size(21.dp).semantics {
-                        contentDescription = "Details about ${product.name}"
-                    },
-                    color = Palette.surfaceRaised,
-                    shape = CircleShape
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text("i", color = Palette.white, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    }
+                    Text("${formatPrice(product.priceCents)} / each", color = Palette.surfaceRaised, fontSize = 13.sp)
                 }
             }
             Surface(
@@ -747,11 +1196,11 @@ private fun QuantityButton(label: String, enabled: Boolean, onClick: () -> Unit)
 @Composable
 private fun OrderSummary(
     itemCount: Int,
-    itemTotal: BigDecimal,
+    itemTotalCents: Long,
     onExpand: () -> Unit,
     onCheckout: () -> Unit
 ) {
-    val totals = calculateOrderTotals(itemTotal)
+    val totals = calculateOrderTotals(itemTotalCents)
     Row(
         modifier = Modifier.fillMaxWidth().background(Palette.deepSurface, RoundedCornerShape(16.dp))
             .padding(horizontal = 18.dp, vertical = 12.dp),
@@ -799,12 +1248,12 @@ private fun OrderSummary(
                 ) {
                     Text("TOTAL", color = Palette.muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
                     Text(
-                        "(${formatPrice(totals.items)} + ${formatPrice(totals.tax)} in taxes)",
+                        "(${formatPrice(totals.itemsCents)} + ${formatPrice(totals.taxCents)} in taxes)",
                         color = Palette.muted,
                         fontSize = 9.sp
                     )
                 }
-                Text(formatPrice(totals.total), color = Palette.white, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text(formatPrice(totals.totalCents), color = Palette.white, fontSize = 22.sp, fontWeight = FontWeight.Bold)
             }
             Button(
                 onClick = onCheckout,
@@ -838,7 +1287,7 @@ private fun CartDetailRow(
     ) {
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(line.product.name, color = Palette.white, fontWeight = FontWeight.SemiBold)
-            Text("${formatPrice(line.product.price)} each", color = Palette.muted, fontSize = 12.sp)
+            Text("${formatPrice(line.product.priceCents)} each", color = Palette.muted, fontSize = 12.sp)
             if (line.customization.isNotBlank()) {
                 Text(line.customization, color = Palette.softWhite, fontSize = 12.sp)
             }
@@ -862,7 +1311,7 @@ private fun CartDetailRow(
             }
             Spacer(Modifier.width(4.dp))
             Text(
-                formatPrice(line.product.price * quantity.toBigDecimal()),
+                formatPrice(line.product.priceCents * quantity),
                 color = Palette.white,
                 fontWeight = FontWeight.SemiBold
             )
@@ -870,10 +1319,5 @@ private fun CartDetailRow(
     }
 }
 
-private fun formatPrice(value: BigDecimal): String =
-    NumberFormat.getCurrencyInstance(Locale.US).format(value)
-
-private fun calculateOrderTotals(itemTotal: BigDecimal): OrderTotals {
-    val tax = itemTotal.multiply(BigDecimal("0.06")).setScale(2, RoundingMode.HALF_UP)
-    return OrderTotals(itemTotal, tax, itemTotal + tax)
-}
+private fun formatPrice(valueCents: Long): String =
+    NumberFormat.getCurrencyInstance(Locale.US).format(BigDecimal.valueOf(valueCents, 2))

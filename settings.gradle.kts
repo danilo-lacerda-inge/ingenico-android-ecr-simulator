@@ -24,3 +24,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "ECR Simulator"
 include(":app")
+include(":shared")
+include(":desktop")
+include(":connector-client")
